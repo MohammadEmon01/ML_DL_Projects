@@ -137,7 +137,7 @@ def main():
         
         with col2:
             st.subheader("📝 Document Summary")
-            if st.button("🚀 Generate Summary", type="primary"):
+            if st.button("Generate Summary", type="primary"):
                 with st.spinner("Processing document... This may take a minute for larger documents."):
                     try:
                         uploaded_file.seek(0)
