@@ -1,76 +1,104 @@
 #Load Important Libraries 
 import streamlit as st
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.document_loaders import PyPDFLoader, DirectoryLoader
-from langchain.chains.summarize import load_summarize_chain
-from transformers import T5Tokenizer , T5ForConditionalGeneration
-from transformers import pipeline
+from langchain.document_loaders import PyPDFLoader
 import torch
 import base64 
-# !pip install accelerate
-# !pip install hf_xet
-# Model and Tokenizer
-checkpoint = "MBZUAI/LaMini-Flan-T5-248M"
-tokenizer = T5Tokenizer.from_pretrained(checkpoint)
-model = T5ForConditionalGeneration.from_pretrained(checkpoint, device_map='auto', torch_dtype=torch.float16)
+import tempfile
+import os
 
-def file_preprocessing(file):
-    loader = PyPDFLoader(file)
-    pages = loader.load_and_split()
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=200, chunk_overlap=50)
-    text = text_splitter.split_documents(pages)
-    final_text = ""
-    for doc in text:
-        print(doc)
-        final_text += doc.page_content + "\n"
-    return final_text
+# Import only what we need
+from transformers import pipeline
 
-#define llm pipeline
-def llm_pipeline(filepath):
+# Use a smaller model or different approach
+@st.cache_resource
+def load_summarization_model():
+    """Load the model with caching to avoid reloading"""
+    return pipeline(
+        "summarization",
+        model="MBZUAI/LaMini-Flan-T5-248M",
+        max_length=150,
+        min_length=30,
+        device=-1  # Force CPU usage
+    )
 
-    pipeline_summarization = pipeline(
-        "summarization", 
-        model=model, 
-        tokenizer=tokenizer, 
-        max_length=500,  # Fixed typo
-        min_length=50
-    ) 
+def file_preprocessing(uploaded_file):
+    # Save to temporary file
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_file:
+        tmp_file.write(uploaded_file.getvalue())
+        tmp_path = tmp_file.name
     
-    input_text = file_preprocessing(filepath)
-    summary = pipeline_summarization(input_text)
-    summary = summary[0]['summary_text']  # Fixed: should be summary[0], not input_text[0]
-    return summary
+    try:
+        # Load PDF and extract text more efficiently
+        loader = PyPDFLoader(tmp_path)
+        pages = loader.load()
+        
+        # Extract only first few pages for large documents
+        max_pages = 5  # Limit to first 5 pages
+        full_text = ""
+        for i, page in enumerate(pages[:max_pages]):
+            full_text += page.page_content + "\n"
+        
+        return full_text
+    finally:
+        # Clean up temporary file
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
-# Now you can call the function with an actual filepath
-# Example usage:
-# result = llm_pipeline("your_file.pdf")
-# print(result)
+def llm_pipeline(uploaded_file):
+    # Load model
+    summarizer = load_summarization_model()
+    
+    # Get text from PDF
+    input_text = file_preprocessing(uploaded_file)
+    
+    # Limit text size more aggressively
+    if len(input_text) > 2000:
+        st.warning("Document is large. Processing first 2000 characters...")
+        input_text = input_text[:2000]
+    
+    try:
+        # Summarize in one go with smaller input
+        summary = summarizer(input_text, max_length=100, min_length=30, do_sample=False)
+        return summary[0]['summary_text']
+    except Exception as e:
+        # Fallback: return first part of text
+        st.error(f"Summarization failed: {str(e)}")
+        return input_text[:500] + "..." if len(input_text) > 500 else input_text
+
 @st.cache_data
-def display_pdf(file):
-    with open(file, "rb") as f:
-        base64_pdf = base64.b64encode(f.read()).decode('utf-8')
-    pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="700" height="1000" type="application/pdf"></iframe>'
+def display_pdf(uploaded_file):
+    base64_pdf = base64.b64encode(uploaded_file.getvalue()).decode('utf-8')
+    pdf_display = f'<iframe src="data:application/pdf;base64,{base64_pdf}" width="100%" height="800" type="application/pdf"></iframe>'
     st.markdown(pdf_display, unsafe_allow_html=True)
-    #Streamlit App Code
-st.set_page_config(page_title="Document Summarizer")
+
+# Streamlit App
+st.set_page_config(page_title="Document Summarizer", layout="wide")
+
 def main():
-    st.title("Document Summarizer using LLM")
+    st.title("📄 Document Summarizer")
     st.write("Upload a PDF document to generate its summary.")
-    uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"])
-    if uploaded_file is not None:
-        if st.button("Generate Summary"):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.header("Uploaded Document")
-                display_pdf(uploaded_file)
-            with col2:
-                st.header("Document Summary")
-                summary = llm_pipeline(uploaded_file)
-                st.write(summary)
     
+    uploaded_file = st.file_uploader("Choose a PDF file", type=["pdf"])
+    
+    if uploaded_file is not None:
+        col1, col2 = st.columns([1, 1])
+        
+        with col1:
+            st.subheader("📖 Uploaded Document")
+            display_pdf(uploaded_file)
+        
+        with col2:
+            st.subheader("📝 Document Summary")
+            if st.button("🚀 Generate Summary", type="primary"):
+                with st.spinner("Processing document..."):
+                    try:
+                        uploaded_file.seek(0)
+                        summary = llm_pipeline(uploaded_file)
+                        st.success("Summary generated!")
+                        st.write(summary)
+                    except Exception as e:
+                        st.error(f"Error: {str(e)}")
+
 if __name__ == "__main__":  
     main()
-    
-            
-            
-
